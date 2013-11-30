@@ -179,6 +179,90 @@ function sync {
 
 }
 
+# Only pull remote changes
+
+function pull {
+  assert_dotdir
+  acquire_lock
+  acquire_remote_lock
+
+  echo
+  echo -e "\x1b\x5b1;32mbitpocket pull-only started\x1b\x5b0m at `date`."
+  echo
+
+  # Fire off slow sync start notifier in background
+  on_slow_sync_start
+
+  # Check what has changed
+  touch "$STATE_DIR/tree-prev"
+  touch "$STATE_DIR/added-prev"
+
+  # Save before-sync state
+  # Must be done with rsync itself (rather than find) to respect includes/excludes
+  # Order of includes/excludes/filters is EXTREMELY important
+  echo "# Saving current state and backing up files (if needed)"
+  echo "  | Root dir: $(pwd)"   
+  rsync -av --list-only --exclude "/$DOT_DIR" $USER_RULES . | grep "^-\|^d" \
+      | sed "s:^\S*\s*\S*\s*\S*\s*\S*\s*:/:" | sed "s:^/\.::" | sort > "$STATE_DIR/tree-current"
+
+  # Prevent bringing back locally deleted files or removing new local files
+  cp -f "$STATE_DIR/added-prev" "$TMP_DIR/fetch-exclude"
+  sort "$STATE_DIR/tree-prev" "$STATE_DIR/tree-current" | uniq -u >> "$TMP_DIR/fetch-exclude"
+
+  # It is difficult to only create the backup directory if needed; instead
+  # we always create it, but remove it if it is empty afterwards.
+  mkdir --parents $DOT_DIR/backups/$TIMESTAMP
+
+  # Determine what will be fetched from server and make backup 
+  # copies of any local files to be deleted or overwritten.
+  # Order of includes/excludes/filters is EXTREMELY important
+  rsync --dry-run \
+        -auvzxi --delete $RSYNC_OPTS --exclude "/$DOT_DIR" --exclude-from "$TMP_DIR/fetch-exclude" $USER_RULES $REMOTE/ . \
+      | grep "^[ch<>\.\*][f]\|\*deleting" | sed "s:^\S*\s*::" | sed "s:\(.*\):if [ -f \"\1\" ]; then cp --parents \"\1\" $DOT_DIR/backups/$TIMESTAMP; fi:" | sh || die "BACKUP"
+  [ "$(ls -A $DOT_DIR/backups/$TIMESTAMP)" ] && echo "  | Some files were backed up to $DOT_DIR/backups/$TIMESTAMP"
+  [ "$(ls -A $DOT_DIR/backups/$TIMESTAMP)" ] || rmdir $DOT_DIR/backups/$TIMESTAMP
+
+  # Actual fetch
+  # Pulling changes from server
+  # Order of includes/excludes/filters is EXTREMELY important
+  echo
+  echo "# Pulling changes from server"
+  rsync -auvzxi --delete $RSYNC_OPTS --exclude "/$DOT_DIR" --exclude-from "$TMP_DIR/fetch-exclude" $USER_RULES $REMOTE/ . | sed "s/^/  | /"  || die "PULL"
+
+  # Actual push
+  # Send new and updated, remotely remove files deleted locally
+  # Order of includes/excludes/filters is EXTREMELY important
+  echo
+  echo "# Pushing changes to server SKIPPED!"
+  # rsync -auvzxi --delete $RSYNC_OPTS --exclude "/$DOT_DIR" $USER_RULES . $REMOTE/ | sed "s/^/  | /" || die "PUSH" 
+
+  # Save after-sync state
+  # Must be done with rsync itself (rather than find) to respect includes/excludes
+  # Order of includes/excludes/filters is EXTREMELY important
+  echo
+  echo "# Saving after-sync state and cleaning up"
+  rsync -av --list-only --exclude "/$DOT_DIR" $USER_RULES . | grep "^-\|^d" \
+      | sed "s:^\S*\s*\S*\s*\S*\s*\S*\s*:/:" | sed "s:^/\.::" | sort > "$TMP_DIR/tree-after"
+
+  # Save all newly created files for next run (to prevent deletion of them)
+  # This includes files created by user in parallel to sync and files fetched from remote
+  comm -23 "$TMP_DIR/tree-after" "$STATE_DIR/tree-current" >"$STATE_DIR/added-prev"
+
+  # Save new tree state for next run
+  cat "$STATE_DIR/tree-current" "$STATE_DIR/added-prev" >"$STATE_DIR/tree-prev"
+
+  # Fire off slow sync stop notifier in background
+  on_slow_sync_stop
+
+  cleanup
+  echo
+  echo -e "\x1b\x5b1;32mbitpocket pull-only finished\x1b\x5b0m at `date`."
+  echo
+
+}
+
+
+
 
 # Pack backups into a git repository
 function pack {
