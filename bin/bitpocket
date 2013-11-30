@@ -456,6 +456,9 @@ elif [ "$1" = "cron" ]; then
 elif [ "$1" = "list" ]; then
   # List all file in sync set (honoring .bitpocket/include & .bitpocket/exclude)
   list 
+elif [ "$1" = "pull" ]; then
+  # pull changes only
+  pull
 elif [ "$1" != "" ] && [ "$1" != "sync" ]; then
   # Show help
   usage
